@@ -5,10 +5,18 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 const port = process.env.PORT || 5000;
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// app.use((req, res, next) => {
+//   res.setHeader("Access-Control-Allow-Origin", "*");
+//   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE");
+//   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+//   next();
+// });
 
 const verifyJWT = (req, res, next) => {
   const authorization = req.headers.authorization;
@@ -20,6 +28,7 @@ const verifyJWT = (req, res, next) => {
   }
   // split token (bearer token)
   const token = authorization.split(" ")[1];
+  // console.log(token);
 
   jwt.verify(token, process.env.SECRET_TOKEN, (err, decoded) => {
     if (err) {
@@ -54,16 +63,18 @@ async function run() {
     // Connect the client to the server	(optional starting in v4.7)
     client.connect();
 
+    // all database collections:
     const usersCollection = client.db("bistroBossDb").collection("users");
     const menuCollection = client.db("bistroBossDb").collection("menu");
     const reviewsCollection = client.db("bistroBossDb").collection("reviews");
     const cartCollection = client.db("bistroBossDb").collection("carts");
+    const paymentCollection = client.db("bistroBossDb").collection("payment");
 
     app.post("/jwt", (req, res) => {
       const user = req.body;
 
       const token = jwt.sign(user, process.env.SECRET_TOKEN, {
-        expiresIn: "2h",
+        expiresIn: "1h",
       });
       res.send({ token });
     });
@@ -86,6 +97,22 @@ async function run() {
     // Get Menu API
     app.get("/menu", async (req, res) => {
       const result = await menuCollection.find().toArray();
+      res.send(result);
+    });
+
+    app.post("/add-item", verifyJWT, verifyAdmin, async (req, res) => {
+      const itemBody = req.body;
+      console.log(itemBody);
+
+      const result = await menuCollection.insertOne(itemBody);
+      res.send(result);
+    });
+
+    app.delete("/delete-item/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+
+      const query = { _id: new ObjectId(id) };
+      const result = await menuCollection.deleteOne(query);
       res.send(result);
     });
 
@@ -175,7 +202,6 @@ async function run() {
 
     app.post("/carts", async (req, res) => {
       const item = req.body;
-      console.log(item);
 
       const result = await cartCollection.insertOne(item);
       res.send(result);
@@ -187,6 +213,38 @@ async function run() {
 
       const result = await cartCollection.deleteOne(query);
       res.send(result);
+    });
+
+    // Create stripe payment intent
+    app.post("/create-payment-intent", verifyJWT, async (req, res) => {
+      const { price } = req.body;
+      const amount = price * 100;
+
+      console.log({ price, amount: amount });
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: "usd",
+        payment_method_types: ["card"],
+      });
+
+      res.send({
+        clientSecret: paymentIntent.client_secret,
+      });
+    });
+
+    // payment history/related api:
+    app.post("/payments", verifyJWT, async (req, res) => {
+      const payment = req.body;
+
+      // insert
+      const insertResult = await paymentCollection.insertOne(payment);
+
+      // delete
+      const query = {
+        _id: { $in: payment.cartItems.map((id) => new ObjectId(id)) },
+      };
+      const deleteResult = await cartCollection.deleteMany(query);
+      res.send({ result: insertResult, deleteResult });
     });
 
     // Send a ping to confirm a successful connection
